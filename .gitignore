@@ -1,0 +1,14 @@
+# Engagement-specific state and evidence stay outside Git.
+.grok/config.toml
+state/
+private/
+cases/
+runs/
+*.stdout
+*.stderr
+*.log
+*.key
+*.pem
+.env
+__pycache__/
+.pytest_cache/
