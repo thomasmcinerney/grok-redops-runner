@@ -132,8 +132,10 @@ case, with stable source IDs so reimporting is safe.
 A blocked page or failed browser action leaves `manifest.json` with the error,
 page text, network transcript, and failure screenshot. Some sites challenge
 headless browsers; review that evidence and complete any interactive verification
-in a headed browser session rather than treating the challenge as a chatbot
-finding. The generic mock test runs with `.venv/bin/python -m unittest -q
+in a headed browser session (`--headed`) rather than treating the
+challenge as a chatbot finding. A headed lane waits up to two minutes for the
+widget launcher after an HTTP error page; the operator must complete the
+verification in that visible browser. Each lane uses a fresh browser context. The generic mock test runs with `.venv/bin/python -m unittest -q
 test_webchat_capture` and exercises both a completed exchange and a 403.
 
 The recorder's main-frame navigation is confined to the exact configured page.

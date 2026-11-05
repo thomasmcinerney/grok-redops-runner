@@ -195,9 +195,14 @@ async def record(args: argparse.Namespace) -> dict:
                 if kind == "open":
                     navigation = await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
                     check_page(page.url, scope, args.redops_dir)
+                    launcher = page.frame_locator('iframe#launcher').locator("button")
                     if navigation and navigation.status >= 400:
-                        raise RuntimeError(f"page returned HTTP {navigation.status}")
-                    await page.frame_locator('iframe#launcher').locator("button").click(timeout=20000)
+                        if not args.headed:
+                            raise RuntimeError(f"page returned HTTP {navigation.status}")
+                        # Let the operator complete interactive verification in the visible browser.
+                        await launcher.wait_for(timeout=120000)
+                        check_page(page.url, scope, args.redops_dir)
+                    await launcher.click(timeout=20000)
                 elif kind == "button":
                     frame = page.frame_locator('iframe[title="Messaging window"]')
                     await frame.get_by_role("button", name=str(action["text"]), exact=True).click(
