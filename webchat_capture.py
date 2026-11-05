@@ -211,7 +211,9 @@ async def record(args: argparse.Namespace) -> dict:
                     frame = page.frame_locator('iframe[title="Messaging window"]')
                     field = frame.locator("#composer-input")
                     await field.fill(str(action["text"]), timeout=20000)
-                    await field.press("Enter")
+                    await frame.get_by_role("button", name="Send message").click(timeout=20000)
+                    await frame.get_by_text(str(action["text"]), exact=True).wait_for(
+                        timeout=10000)
                 elif kind == "upload":
                     frame = page.frame_locator('iframe[title="Messaging window"]')
                     source = Path(str(action["file"])).expanduser().resolve()
@@ -307,6 +309,26 @@ async def record(args: argparse.Namespace) -> dict:
                     "artifact_hashes": {"network": sha(network_path),
                                         "screenshot": screenshot_hash},
                 }
+                if screenshot_hash:
+                    failed_event = {
+                        "id": f"failure-{len(manifest['events']) + 1:03d}",
+                        "source_id": f"{manifest['run_id']}:failure",
+                        "at": manifest["failure"]["at"], "type": "error",
+                        "input": current_action,
+                        "output": json.dumps(manifest["failure"]["output"],
+                                             ensure_ascii=False),
+                        "network_path": manifest["failure"]["network_path"],
+                        "screenshot_path": manifest["failure"]["screenshot_path"],
+                        "artifact_hashes": manifest["failure"]["artifact_hashes"],
+                    }
+                    manifest["events"].append(failed_event)
+                    if args.engagement is not None:
+                        try:
+                            failed_event["redops_event_id"] = post_redops(
+                                args.redops_url, args.engagement, page_url,
+                                failed_event, traffic[action_traffic_start:])
+                        except Exception as post_error:
+                            manifest["failure"]["redops_post_error"] = repr(post_error)
             raise
         finally:
             manifest["finished_at"] = now()

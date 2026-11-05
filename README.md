@@ -130,7 +130,9 @@ the exact network transcript and direct screenshot for every action into the
 case, with stable source IDs so reimporting is safe.
 
 A blocked page or failed browser action leaves `manifest.json` with the error,
-page text, network transcript, and failure screenshot. Some sites challenge
+page text, network transcript, and failure screenshot. When an engagement is
+selected, that failed action is also posted to RedOps as a `webchat` event and
+can be imported into the report case. Some sites challenge
 headless browsers; review that evidence and complete any interactive verification
 in a headed browser session (`--headed`) rather than treating the
 challenge as a chatbot finding. A headed lane waits up to two minutes for the

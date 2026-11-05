@@ -19,10 +19,12 @@ LAUNCHER = b'<html><body><button>Open chat</button></body></html>'
 WIDGET = b'''<!doctype html><html><body>
 <div id="messages">Hello</div>
 <button onclick="document.querySelector('#messages').textContent += ' Provider selected'">Provider</button>
-<input id="composer-input" aria-label="Type a message" onkeydown="
-if(event.key==='Enter'){const value=this.value;
+<input id="composer-input" aria-label="Type a message">
+<button aria-label="Send message" onclick="
+const value=document.querySelector('#composer-input').value;
+const line=document.createElement('div');line.textContent=value;document.body.appendChild(line);
 fetch('/reply',{method:'POST',body:value}).then(r=>r.text()).then(
-t=>document.querySelector('#messages').textContent+=' '+t)}">
+t=>document.querySelector('#messages').textContent+=' '+t)">Send</button>
 </body></html>'''
 
 
@@ -117,6 +119,9 @@ class WebchatCaptureTest(unittest.TestCase):
                 self.assertNotEqual(run.returncode, 0)
                 manifest = json.loads((out / "manifest.json").read_text())
                 self.assertEqual(manifest["status"], "failed")
+                self.assertEqual(len(manifest["events"]), 1)
+                self.assertEqual(manifest["events"][0]["type"], "error")
+                self.assertIn("HTTP 403", manifest["events"][0]["output"])
                 self.assertIn("HTTP 403", manifest["failure"]["output"]["error"])
                 self.assertTrue((out / manifest["failure"]["screenshot_path"]).is_file())
                 self.assertTrue((out / manifest["failure"]["network_path"]).is_file())
