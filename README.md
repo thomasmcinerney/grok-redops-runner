@@ -2,7 +2,7 @@
 
 This repository packages the method used to run several Grok CLI investigations in parallel while preserving a reviewer-ready evidence trail. Each lane is **one independent Grok CLI process**, with its own assignment, session UUID, prompt, and state directory. These are parent-managed processes, not Grok's internal subagents.
 
-The local `runner.py` starts and monitors Grok. Grok uses the RedOps MCP server for target commands and evidence. The runner never sends target traffic or calls the RedOps HTTP control plane.
+The local `runner.py` starts and monitors Grok. Grok uses the RedOps MCP server for target commands and evidence. That supervisor never sends target traffic or calls the RedOps HTTP control plane. The separate `webchat_capture.py` browser adapter drives only its configured chatbot page and records the resulting exchange.
 
 ## How the pieces fit
 
@@ -70,6 +70,77 @@ Give lanes distinct hypotheses instead of duplicating a broad scan. The runner h
 ## What Grok can call
 
 The tested runner starts Grok with project trust, the project `--cwd`, a prompt file, streaming JSON, RedOps MCP allowed, and `--no-subagents`. It denies direct Bash, WebFetch, WebSearch, and CaseHub calls. It does not blanket-deny every other MCP connector. Inspect the effective tool list and permission behavior after a Grok CLI upgrade; keep target actions on RedOps MCP so the command and output remain attributable.
+
+## Browser chatbot capture
+
+Use the browser adapter for a web chatbot whose interactions are outside Grok's
+RedOps MCP command stream. It records exact scenario inputs, widget text, full
+chat request/response bodies, WebSocket frames, screenshots, timestamps, and SHA-256
+hashes under a private lane directory. Static resource responses retain headers,
+byte counts, and hashes to keep a session manageable. Each lane has its own browser context.
+The adapter requires the generic web scope and report bridge from redops-public.
+
+Install Playwright in an isolated environment. Chromium may be supplied by the
+system, as shown here:
+
+~~~sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-webchat.txt
+~~~
+
+Create a RedOps engagement with an exact HTTPS page URL as its scope, then use
+web_scope_set to add only observed messaging API prefixes if direct replay is
+needed. A page URL permits browser interaction with that page; it does not
+permit arbitrary API replay on the same host.
+
+Create a private scenario JSON, for example:
+
+~~~json
+{
+  "page_url": "https://chat.example.test/help",
+  "actions": [
+    {"type": "open"},
+    {"type": "button", "text": "Provider"},
+    {"type": "message", "text": "What can you help with?"}
+  ]
+}
+~~~
+
+Run one lane with its own output directory:
+
+~~~sh
+.venv/bin/python webchat_capture.py \
+  --scenario private/lane-01.json \
+  --out private/lane-01-capture \
+  --redops-dir /absolute/path/to/redops-public \
+  --engagement 1 \
+  --browser-executable /usr/bin/chromium
+~~~
+
+The recorder fetches that engagement's web scope from RedOps and posts each
+completed action to its capture endpoint. It stops if the page URL is outside
+scope. Direct API actions require an explicitly configured API prefix; use the
+browser flow to identify a messaging route before adding one. For a local test,
+use --scope-file with the JSON returned by web_scope_show instead of
+--engagement. Keep actual prompts, cookies, and captures under private/.
+
+For a report case with a target and stage already created, add
+--report-case, --report-module-dir, --target, and --stage. The importer copies
+the exact network transcript and direct screenshot for every action into the
+case, with stable source IDs so reimporting is safe.
+
+A blocked page or failed browser action leaves `manifest.json` with the error,
+page text, network transcript, and failure screenshot. Some sites challenge
+headless browsers; review that evidence and complete any interactive verification
+in a headed browser session rather than treating the challenge as a chatbot
+finding. The generic mock test runs with `.venv/bin/python -m unittest -q
+test_webchat_capture` and exercises both a completed exchange and a 403.
+
+The recorder's main-frame navigation is confined to the exact configured page.
+Its embedded widget loads its normal vendor resources. It only submits
+scenario actions to the widget or to configured API prefixes. Use separate
+browser contexts for independent lanes and keep each lane on a distinct
+hypothesis.
 
 ## Report and shutdown
 
