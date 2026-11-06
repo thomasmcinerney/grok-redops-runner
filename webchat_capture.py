@@ -136,7 +136,7 @@ async def record(args: argparse.Namespace) -> dict:
 
     async def response_event(resp):
         try:
-            body = await resp.body()
+            body = await asyncio.wait_for(resp.body(), timeout=15)
             traffic.append({
                 "at": now(), "type": "response", "url": resp.url,
                 "status": resp.status, "resource_type": resp.request.resource_type,
@@ -155,8 +155,13 @@ async def record(args: argparse.Namespace) -> dict:
         browser = await playwright.chromium.launch(
             executable_path=args.browser_executable, headless=not args.headed,
             args=["--no-sandbox"])
-        context = await browser.new_context(accept_downloads=False,
-                                             service_workers="block")
+        context_options = {"accept_downloads": False, "service_workers": "block"}
+        if scenario.get("storage_state"):
+            state_path = Path(str(scenario["storage_state"])).expanduser().resolve()
+            if not state_path.is_file():
+                raise ValueError(f"browser storage state missing: {state_path}")
+            context_options["storage_state"] = str(state_path)
+        context = await browser.new_context(**context_options)
         page = await context.new_page()
         page.on("request", lambda req: tasks.append(asyncio.create_task(request_event(req))))
         page.on("response", lambda resp: tasks.append(asyncio.create_task(response_event(resp))))
@@ -187,12 +192,19 @@ async def record(args: argparse.Namespace) -> dict:
                 current_action = action
                 action_traffic_start = len(traffic)
                 kind = str(action.get("type") or "")
-                if kind not in {"open", "button", "message", "upload", "api"}:
+                if kind not in {"visit", "open", "link", "login", "button",
+                                "message", "upload", "api"}:
                     raise ValueError(f"unsupported action {kind!r}")
                 start = len(traffic)
                 aid = f"{index:03d}"
-                captured_input = action.get("text") if kind in {"button", "message"} else action
-                if kind == "open":
+                captured_input = action.get("text") if kind in {"link", "button", "message"} else action
+                if kind == "visit":
+                    navigation = await page.goto(
+                        page_url, wait_until="domcontentloaded", timeout=30000)
+                    check_page(page.url, scope, args.redops_dir)
+                    if navigation and navigation.status >= 400 and not args.headed:
+                        raise RuntimeError(f"page returned HTTP {navigation.status}")
+                elif kind == "open":
                     navigation = await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
                     check_page(page.url, scope, args.redops_dir)
                     launcher = page.frame_locator('iframe#launcher').locator("button")
@@ -203,6 +215,22 @@ async def record(args: argparse.Namespace) -> dict:
                         await launcher.wait_for(timeout=120000)
                         check_page(page.url, scope, args.redops_dir)
                     await launcher.click(timeout=20000)
+                elif kind == "link":
+                    await page.get_by_role("link", name=str(action["text"]), exact=True).click(
+                        timeout=20000)
+                    check_page(page.url, scope, args.redops_dir)
+                elif kind == "login":
+                    credentials_path = Path(str(action["credentials_file"])).expanduser().resolve()
+                    credentials = json.loads(credentials_path.read_text(encoding="utf-8"))
+                    email = str(credentials["email"])
+                    password = str(credentials["password"])
+                    captured_input = {"email": email,
+                                      "credentials_file": str(credentials_path),
+                                      "credentials_sha256": sha(credentials_path)}
+                    await page.locator('input[type="email"]').fill(email, timeout=20000)
+                    await page.locator('input[type="password"]').fill(password, timeout=20000)
+                    await page.get_by_role("button", name="Sign in", exact=True).click(timeout=30000)
+                    check_page(page.url, scope, args.redops_dir)
                 elif kind == "button":
                     frame = page.frame_locator('iframe[title="Messaging window"]')
                     await frame.get_by_role("button", name=str(action["text"]), exact=True).click(
@@ -232,26 +260,67 @@ async def record(args: argparse.Namespace) -> dict:
                     body = action.get("body")
                     raw = body.encode("utf-8") if isinstance(body, str) else (
                         json.dumps(body).encode("utf-8") if body is not None else None)
+                    request_headers = action.get("headers") or {}
+                    traffic.append({
+                        "at": now(), "type": "request", "source": "direct_api",
+                        "url": str(action["url"]), "method": method,
+                        "resource_type": "api", "headers": request_headers,
+                        "body_b64": base64.b64encode(raw or b"").decode("ascii"),
+                        "body_bytes": len(raw or b""),
+                        "body_sha256": hashlib.sha256(raw or b"").hexdigest(),
+                    })
                     response = await context.request.fetch(
                         str(action["url"]), method=method,
-                        headers=action.get("headers") or {}, data=raw, timeout=30000)
+                        headers=request_headers, data=raw, timeout=30000)
                     api_body = await response.body()
+                    traffic.append({
+                        "at": now(), "type": "response", "source": "direct_api",
+                        "url": str(action["url"]), "status": response.status,
+                        "resource_type": "api", "headers": response.headers,
+                        "body_b64": base64.b64encode(api_body).decode("ascii"),
+                        "body_bytes": len(api_body),
+                        "body_sha256": hashlib.sha256(api_body).hexdigest(),
+                    })
                     captured_input = {"method": method, "url": action["url"],
-                                      "headers": action.get("headers") or {},
+                                      "headers": request_headers,
                                       "body": body}
                 if nav_errors:
                     raise ValueError(nav_errors[-1])
                 frame = page.frame_locator('iframe[title="Messaging window"]')
-                widget_text = await settle(page, frame, int(action.get("wait_ms", args.wait_ms)))
+                response_timeout = int(action.get("response_timeout_ms", 45000))
+                if action.get("wait_for_text"):
+                    await frame.get_by_text(str(action["wait_for_text"]), exact=False).wait_for(
+                        timeout=response_timeout)
+                if action.get("wait_for_button"):
+                    await frame.get_by_role("button", name=str(action["wait_for_button"]),
+                                            exact=True).wait_for(timeout=response_timeout)
+                wait_ms = int(action.get("wait_ms", args.wait_ms))
+                if kind in {"visit", "link", "login"}:
+                    await page.wait_for_timeout(wait_ms)
+                    widget_text = await page.locator("body").inner_text(timeout=10000)
+                else:
+                    widget_text = await settle(page, frame, wait_ms)
+                if kind == "login":
+                    state_path = run_dir / "storage_state.json"
+                    await context.storage_state(path=str(state_path))
+                    os.chmod(state_path, 0o600)
+                    captured_input["storage_state_path"] = str(state_path.relative_to(run_dir))
+                    captured_input["storage_state_sha256"] = sha(state_path)
                 if kind == "api":
                     output = json.dumps({"status": response.status,
-                                         "headers": await response.all_headers(),
+                                         "headers": response.headers,
                                          "body_b64": base64.b64encode(api_body).decode("ascii"),
                                          "widget_text": widget_text}, ensure_ascii=False)
                 else:
                     output = widget_text
                 if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.gather(*tasks, return_exceptions=True), timeout=20)
+                    except asyncio.TimeoutError:
+                        traffic.append({"at": now(), "type": "capture_timeout",
+                                        "action": aid,
+                                        "note": "pending network capture exceeded 20 seconds"})
                     tasks.clear()
                 selected = traffic[start:]
                 network_path = run_dir / "network" / f"{aid}.jsonl"
@@ -283,7 +352,13 @@ async def record(args: argparse.Namespace) -> dict:
             manifest["error"] = repr(exc)
             if current_action is not None:
                 if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.gather(*tasks, return_exceptions=True), timeout=20)
+                    except asyncio.TimeoutError:
+                        traffic.append({"at": now(), "type": "capture_timeout",
+                                        "action": "failure",
+                                        "note": "pending network capture exceeded 20 seconds"})
                     tasks.clear()
                 network_path = run_dir / "network" / "failure.jsonl"
                 network_path.write_text(
@@ -335,13 +410,19 @@ async def record(args: argparse.Namespace) -> dict:
             write_json(run_dir / "manifest.json", manifest)
             await context.close()
             await browser.close()
-    if args.report_case:
-        sys.path.insert(0, str(Path(args.report_module_dir).resolve()))
-        from webchat_import import import_run
-        manifest["report_event_ids"] = import_run(
-            Path(args.report_case).resolve(), args.target, args.stage,
-            run_dir / "manifest.json")
-        write_json(run_dir / "manifest.json", manifest)
+            if args.report_case:
+                try:
+                    sys.path.insert(0, str(Path(args.report_module_dir).resolve()))
+                    from webchat_import import import_run
+                    manifest["report_event_ids"] = import_run(
+                        Path(args.report_case).resolve(), args.target, args.stage,
+                        run_dir / "manifest.json")
+                except (Exception, SystemExit) as import_exc:
+                    manifest["report_import_error"] = repr(import_exc)
+                    if manifest["status"] == "completed":
+                        raise
+                finally:
+                    write_json(run_dir / "manifest.json", manifest)
     return manifest
 
 

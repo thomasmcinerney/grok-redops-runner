@@ -124,6 +124,24 @@ browser flow to identify a messaging route before adding one. For a local test,
 use --scope-file with the JSON returned by web_scope_show instead of
 --engagement. Keep actual prompts, cookies, and captures under private/.
 
+For a signed-in chatbot, add each observed sign-in page path to the engagement's
+exact `web.pages` scope before navigating to it. Query strings are omitted from
+the scope entry; the recorder still captures the actual URL. Store the account
+in a private JSON file with mode `0600`, such as
+`{"email":"test@example.invalid","password":"..."}`, then use `visit`,
+`link`, `login`, and `open` actions in that order to open the widget only after
+authentication. The manifest records the email and a hash of the credential
+file, while the private network transcript retains the actual sign-in request.
+The `login` action saves `storage_state.json` under the run directory; verify
+that a later browser context is truly signed in before relying on that state.
+Set `wait_for_text` or `wait_for_button` on a step when the next action depends
+on an asynchronous bot reply. A timed-out network response is noted in the
+capture rather than leaving the lane stalled indefinitely.
+Direct API actions write their exact request and response into the network
+JSONL as well as the manifest. If a later action fails, earlier completed
+actions and the failure screenshot are still imported into a paired report
+case.
+
 For a report case with a target and stage already created, add
 --report-case, --report-module-dir, --target, and --stage. The importer copies
 the exact network transcript and direct screenshot for every action into the
